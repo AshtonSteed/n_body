@@ -1,5 +1,6 @@
 use plotters::prelude::*;
 extern crate nalgebra as na;
+use fastrand;
 
 struct Quadtree {
     center: na::Vector2<f64>,
@@ -27,7 +28,6 @@ impl Quadtree {
         let mut miny = f64::MAX;
         let mut maxy = f64::MIN;
         let mut com = na::vector![0.0, 0.0];
-        let mut mass = 0.0;
         for i in 0..points.len() {
             if points[i][0] < minx {
                 minx = points[i][0]
@@ -43,9 +43,9 @@ impl Quadtree {
             }
 
             com += points[i]; // * masses[i];
-            mass += masses[i]
         }
-        //com = com / mass; //this and commented code below make center = com, otherwise just geometric center of particles
+        //TODO: set abs limit for quad bounds
+
         com = com / points.len() as f64;
         let dif = (maxx - com[0])
             .max(maxy - com[1])
@@ -122,7 +122,9 @@ impl Quadtree {
         } else {
             let mut temp = na::vector!(0.0, 0.0);
             for child in self.children.as_ref().unwrap() {
-                temp += child.barnes_hut(point, theta, g)
+                if child.mass != 0.0 {
+                    temp += child.barnes_hut(point, theta, g)
+                }
             }
             temp
         }
@@ -180,7 +182,7 @@ fn acceleration_function(
     mass2: f64,
     g: f64,
 ) -> na::Vector2<f64> {
-    let mut deltap = p2 - p1;
+    let deltap = p2 - p1;
     let distance2 = modulus_squared(deltap);
 
     let mag = mass2 * g / distance2;
@@ -273,7 +275,7 @@ fn draw_contour(
     maxy: f64,
     contour: bool,
 ) {
-    let root = BitMapBackend::new("images/coutour07.jpg", (1000, 1000)).into_drawing_area();
+    let root = BitMapBackend::new("images/coutour.jpg", (1000, 1000)).into_drawing_area();
 
     root.fill(&WHITE).unwrap();
 
@@ -338,12 +340,13 @@ fn draw_bodies(
     maxy: f64,
     masses: Vec<f64>,
     drawbox: bool,
+    res: i32,
 ) //dt is ms per frame
 {
     //fuck, data type might be incompatible
     let area = BitMapBackend::gif(
         "images/animated.gif",
-        (500, 500),
+        (1000, 1000),
         (dt * 1000.0).round() as u32, /* Each frame show 1s */
     )
     .unwrap()
@@ -363,7 +366,7 @@ fn draw_bodies(
         ctx.draw_series(
             bodyhist[i]
                 .iter()
-                .map(|point| Circle::new((point[0], point[1]), 2, WHITE.filled())),
+                .map(|point| Circle::new((point[0], point[1]), 1, WHITE.filled())),
         )
         .unwrap();
 
@@ -382,45 +385,121 @@ fn draw_bodies(
     }
 }
 
+fn cloud(
+    points: &mut Vec<na::Vector2<f64>>,
+    velocities: &mut Vec<na::Vector2<f64>>,
+    masses: &mut Vec<f64>,
+    center_index: usize,
+    n: i32,
+    r_avd: f64,
+    r_div: f64,
+    v_var: f64,
+    max_mass_ratio: f64,
+    g: f64,
+) {
+    let rng = fastrand::Rng::new();
+
+    for _i in 0..n {
+        let r = r_avd + (rng.f64() - 0.5) * 2.0 * r_div;
+        let theta = rng.f64() * 2.0 * std::f64::consts::PI;
+        let v_temp = ((masses[center_index] + n as f64 * max_mass_ratio / 0.5) * g / r).sqrt();
+        let v_base = v_temp + v_temp * v_var * (rng.f64() - 0.5);
+
+        points.push(na::vector![
+            points[center_index][0] + r * theta.cos(),
+            points[center_index][1] + r * theta.sin()
+        ]);
+        velocities.push(na::vector![
+            velocities[center_index][0] + v_base * (theta + std::f64::consts::PI / 2.0).cos(),
+            velocities[center_index][1] + v_base * (theta + std::f64::consts::PI / 2.0).sin()
+        ]);
+        masses.push(rng.f64() * max_mass_ratio * masses[center_index]);
+    }
+}
 fn main() {
     let tstep = 0.01; //ammount of time per simulation step
-    let t: f64 = 100.0; //total simulation time
-    let theta = 0.25; //ratio of sidelength/distance used in BH alg, lower values are more accurate, 0 is direct force summation
-    let g = 1.0; //gravitational constant
+    let t: f64 = 10.0; //total simulation time
+    let theta = 0.25; //ratio of half-sidelength / distance used in BH alg, lower values are more accurate, 0 is direct force summation
+    let g = 0.1; //gravitational constant
     let playback = 5; //changes speed of simulation
     let halfsize = 10.0; //size in each direction displayed
     let drawbox = true; //decides whether or not to draw quadtree in animation
     let contour = true; //decides whether or not to draw a contour plot or just direct pixle values
+    let res = 750;
 
     let frames = (t / tstep).round() as i32;
 
     //initializes coordinates of all bodies in system
     let mut points = vec![
         na::Vector2::new(0.0, 0.0),
-        na::Vector2::new(6.5, 0.0),
-        na::Vector2::new(6.75, 0.0),
-        na::Vector2::new(-0.0, -4.0),
-        na::Vector2::new(0.0, -4.5),
-        na::Vector2::new(0.0, 9.0),
-        na::vector![0.0, 9.25],
-        na::vector![1.0, 0.0],
+        na::vector![9.0, 0.0],
+        na::vector![-3.0, 0.0],
     ];
     //masses of all bodies
-    let masses = vec![50.0, 0.5, 0.05, 1.0, 0.05, 1.0, 0.05, 5.0];
+    let mut masses = vec![30.0, 20.0, 10.0, 0.01];
     // initial velocities
     let mut velocities = vec![
         na::vector![0.0, 0.0],
-        na::vector![0.0, 3.0],
-        na::vector![0.0, 1.4],
-        na::vector![3.5, 0.0],
-        na::vector![2.121, 0.0],
-        na::vector![-2.3, 0.0],
-        na::vector![-0.357, 0.0],
-        na::vector![0.0, -7.1],
+        na::vector![0.0, 0.5],
+        na::vector![0.0, -0.8],
+        na::vector![0.0, 0.0],
     ];
+    //generate a bunch of light n bodies around object 1
+    let n = 0;
+    let r_avd = 6.0;
+    let r_div = 0.3;
+    let max_mass_ratio = 0.0002; // one part per million is similar to galaxy, ie five zeros
+    cloud(
+        &mut points,
+        &mut velocities,
+        &mut masses,
+        0,
+        n,
+        r_avd,
+        r_div,
+        0.1,
+        max_mass_ratio,
+        g,
+    );
 
     //funny normalization code, should put center of mass at origin and put average velocity = 0
     //interestingly, makes COM constant at (0,0) *assuming perfect simulation, which it isnt
+    let mut com = na::vector![0.0, 0.0];
+    let mut mass = 0.0;
+    let mut cov = na::vector![0.0, 0.0];
+
+    for i in 0..points.len() {
+        com += points[i] * masses[i];
+        cov += velocities[i] * masses[i];
+        mass += masses[i];
+    }
+    cov /= mass;
+    com /= mass;
+
+    for i in 0..points.len() {
+        points[i] -= com;
+        velocities[i] -= cov;
+    }
+    points.push(na::vector![0.0, 0.0]);
+    let momentum1 = modulus_squared(cov).sqrt() * mass;
+    println!(
+        "{} Bodies at {} Steps, Theta = {}",
+        points.len(),
+        frames,
+        theta
+    );
+    let tic = std::time::Instant::now();
+    //actual simulation code, records positions of bodies into a single vector
+    let mut bodyhist = vec![points.to_vec()];
+    for i in 0..frames {
+        runge_kutta(&mut points, &masses, &mut velocities, tstep, theta, g);
+        if i % playback == 0 {
+            bodyhist.push(points.to_vec());
+        }
+    }
+
+    println!("Runged in {} Seconds", tic.elapsed().as_secs_f64());
+
     let mut com = na::vector![0.0, 0.0];
     let mut mass = 0.0;
     let mut cov = na::vector![0.0, 0.0];
@@ -431,23 +510,17 @@ fn main() {
     }
     cov /= mass;
     com /= mass;
-    for i in 0..points.len() {
-        points[i] -= com;
-        velocities[i] -= cov;
-    }
+    let momentum2 = modulus_squared(cov).sqrt() * mass;
+    println!(
+        "COM Delta: {}   System Velocity Delta: {}   Average Momentum Change: {} Per Second",
+        com,
+        cov,
+        (momentum2 - momentum1).abs() / t
+    );
 
-    //actual simulation code, records positions of bodies into a single vector
-    let mut bodyhist = vec![points.to_vec()];
-    for i in 0..frames {
-        runge_kutta(&mut points, &masses, &mut velocities, tstep, theta, g);
-        if i % playback == 0 {
-            bodyhist.push(points.to_vec());
-        }
-    }
-    println!("runged");
-
+    let toc = std::time::Instant::now();
     draw_contour(
-        &bodyhist[20],
+        &bodyhist[0],
         &masses,
         g,
         theta,
@@ -467,5 +540,8 @@ fn main() {
         halfsize,
         masses,
         drawbox,
+        res,
     );
+
+    println!("Rendered in {} Seconds", toc.elapsed().as_secs_f64());
 }
